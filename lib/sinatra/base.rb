@@ -575,17 +575,25 @@ module Sinatra
     #
     # See RFC 2616 / 14.9 for more on standard cache control directives:
     # http://tools.ietf.org/html/rfc2616#section-14.9.1
+
+    # 如英文注释，这个 api 帮助设置 http Cache-Control 属性
     def cache_control(*values)
+      # 因为hash的属性是最后一个，所以处理最后的hash属性
       if values.last.kind_of?(Hash)
         hash = values.pop
-        # 去掉不是
+        # 去掉不需要设置的属性
         hash.reject! { |k, v| v == false }
+        # 将一些不需要值但又值为true的属性添加到 values
+        # 并且将其从 hash 中删除
         hash.reject! { |k, v| values << k if v == true }
       else
         hash = {}
       end
 
+      # 将 `_` 替换为 `-`
       values.map! { |value| value.to_s.tr('_','-') }
+      # 对于hash中其他的属性，转换成标准格式
+      # 从 :max_age => 60 转换成 max-age=60
       hash.each do |key, value|
         key = key.to_s.tr('_', '-')
         value = value.to_i if ['max-age', 's-maxage'].include? key
@@ -603,10 +611,15 @@ module Sinatra
     #   expires 500, :public, :must_revalidate
     #   => Cache-Control: public, must-revalidate, max-age=500
     #   => Expires: Mon, 08 Jun 2009 08:50:17 GMT
-    #
+
+    # 这个 api 其实包装了 cache_control 方法
+    # 它将过期的相对时间转换成绝对时间，作为 Expires 的值
+    # 然后将其他参数全部传给 cache_control 中去
     def expires(amount, *values)
       values << {} unless values.last.kind_of?(Hash)
 
+      # time 是绝对时间 用来设置 Expires 时间
+      # max_age 是相对时间，用来设置 Cache-Control
       if amount.is_a? Integer
         time    = Time.now + amount.to_i
         max_age = amount
@@ -618,6 +631,7 @@ module Sinatra
       values.last.merge!(:max_age => max_age)
       cache_control(*values)
 
+      # 必须 require 'time' 才能有 httpdate 方法
       response['Expires'] = time.httpdate
     end
 
@@ -632,11 +646,12 @@ module Sinatra
     # If-Modified-Since 是发送请求时的http头部请求标签，服务器会把这个时间与服务器上实际文件的最后修改时间进行比较
     # 如果没有修改，则返回304 请求
     # Http 回复会有 Last-Modified 时间
-    # 这个 api 用来设置 Last-Modified 的时间
+    # 这个 api 用来设置 Last-Modified 的时间，同时也会做检查
     def last_modified(time)
       return unless time
       time = time_for time
       response['Last-Modified'] = time.httpdate
+      # 如果这个请求需要 etag 缓存验证，那么就不根据 last_modified 的做时间验证
       return if env['HTTP_IF_NONE_MATCH']
 
       # 如果请求中带 If-Modified-Since 那么需要比较，然后可能回复304
