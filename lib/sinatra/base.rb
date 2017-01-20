@@ -670,6 +670,10 @@ module Sinatra
     rescue ArgumentError
     end
 
+    # etag 分为强校验和弱校验
+    # "123456789"    – 强校验
+    # W/"123456789"  – 弱校验 前面带个W
+
     ETAG_KINDS = [:strong, :weak]
     # Set the response entity tag (HTTP 'ETag' header) and halt if conditional
     # GET matches. The +value+ argument is an identifier that uniquely
@@ -680,12 +684,20 @@ module Sinatra
     # When the current request includes an 'If-None-Match' header with a
     # matching etag, execution is immediately halted. If the request method is
     # GET or HEAD, a '304 Not Modified' response is sent.
+
+    # etag 是服务器返回给客户端的
+    # 客户端则是带上 If-Match 或者 If-None-Match
+    # 这个方法用来设置etag 同时也会处理客户端传来的 If-Match 和 If-None-Match ( 为什么处理也在这个函数，你们自己想一下 :) )
+    # 什么时候带 If-Match, 什么时候带 If-None-Match 是可以根据语义的
+    # 例如，get head 请求带 If-None-Match。 语义是，如果资源和这个etag不符合，才给我资源
+    # 而put patch 请求带 If-Match。语义是， 如果我要修改的资源还是原来的资源，那么就更新，否则 412
     def etag(value, options = {})
       # Before touching this code, please double check RFC 2616 14.24 and 14.26.
       options      = {:kind => options} unless Hash === options
       kind         = options[:kind] || :strong
       new_resource = options.fetch(:new_resource) { request.post? }
 
+      # etag 校验只能是 strong 或者 weak
       unless ETAG_KINDS.include?(kind)
         raise ArgumentError, ":strong or :weak expected"
       end
@@ -694,11 +706,16 @@ module Sinatra
       value = "W/#{value}" if kind == :weak
       response['ETag'] = value
 
+      # 如果 先决条件是不匹配
       if success? or status == 304
+        # 如果 etag 匹配
         if etag_matches? env['HTTP_IF_NONE_MATCH'], new_resource
+          # 如果是安全的请求，返回304
+          # 否则，因为希望的是不匹配，但是这里却匹配了，返回412
           halt(request.safe? ? 304 : 412)
         end
 
+        # 如果 先决条件是匹配，单这里 etag 不匹配， 那么返回412
         if env['HTTP_IF_MATCH']
           halt 412 unless etag_matches? env['HTTP_IF_MATCH'], new_resource
         end
@@ -706,6 +723,7 @@ module Sinatra
     end
 
     # Sugar for redirect (example:  redirect back)
+    # 回到 referer
     def back
       request.referer
     end
@@ -742,6 +760,7 @@ module Sinatra
 
     # Generates a Time object from the given value.
     # Used by #expires and #last_modified.
+    # 将 value 转换成 time 的方法
     def time_for(value)
       if value.is_a? Numeric
         Time.at value
@@ -759,8 +778,12 @@ module Sinatra
     private
 
     # Helper method checking if a ETag value list includes the current ETag.
+    # 检查和 etag 是和否匹配
     def etag_matches?(list, new_resource = request.post?)
+      # 如果是 * 表示全部匹配
+      # 那么对于不是new_resource 那么 etag 就是匹配的
       return !new_resource if list == '*'
+      # 检查是否有任何一个 etag 匹配
       list.to_s.split(/\s*,\s*/).include? response['ETag']
     end
 
