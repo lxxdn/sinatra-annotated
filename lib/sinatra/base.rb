@@ -932,15 +932,22 @@ module Sinatra
 
     # Calls the given block for every possible template file in views,
     # named name.ext, where ext is registered on engine.
+    # 尝试各种不同的后缀名来查找模版文件，这个方法主要是遍历各种可能的后缀名
+    # 然后组成可能的文件路径，然后交给 block 去生成 Tilt的模版实例
     def find_template(views, name, engine)
+      # 调用 block ，返回值是一个 Tilt 的template实例对象
       yield ::File.join(views, "#{name}.#{@preferred_extension}")
 
+      # Tilt 支持将一个特定的后缀名绑定(map)到一种template engine
+      # 例如 将 .bar 注册为 erb，那么 Tile 就指导用erb来编译.bar文件
       if Tilt.respond_to?(:mappings)
+        # 尝试用注册的mappings的后缀名作为模版的后缀名来查找模版文件
         Tilt.mappings.each do |ext, engines|
           next unless ext != @preferred_extension and engines.include? engine
           yield ::File.join(views, "#{name}.#{ext}")
         end
       else
+        # 尝试用默认的mapping的后缀名来尝试查找模版文件
         Tilt.default_mapping.extensions_for(engine).each do |ext|
           yield ::File.join(views, "#{name}.#{ext}") unless ext == @preferred_extension
         end
@@ -956,9 +963,13 @@ module Sinatra
       render engine, template, options, locals
     end
 
+    # 第一个是 template engine
+    # data 可能是一个页面的名字，也可能就是一个页面的内容
     def render(engine, data, options = {}, locals = {}, &block)
       # merge app-level options
+      # 获得这个 engine 的配置
       engine_options = settings.respond_to?(engine) ? settings.send(engine) : {}
+      # 将传进来的参数和settings的参数合并
       options.merge!(engine_options) { |key, v1, v2| v1 }
 
       # extract generic options
@@ -966,12 +977,14 @@ module Sinatra
       views           = options.delete(:views)  || settings.views || "./views"
       layout          = options[:layout]
       layout          = false if layout.nil? && options.include?(:layout)
+      # 没有 layout
       eat_errors      = layout.nil?
       layout          = engine_options[:layout] if layout.nil? or (layout == true && engine_options[:layout] != false)
       layout          = @default_layout         if layout.nil? or layout == true
       layout_options  = options.delete(:layout_options) || {}
       content_type    = options.delete(:default_content_type)
       content_type    = options.delete(:content_type)   || content_type
+      # 对于一些不支持layout的template engine，例如 set :rdoc, :layout_engine => :erb
       layout_engine   = options.delete(:layout_engine)  || engine
       scope           = options.delete(:scope)          || self
       options.delete(:layout)
@@ -1001,36 +1014,61 @@ module Sinatra
       output
     end
 
+    # 将 template 编译成 string
+    # engine 是 template engine，例如 erb, slim, haml 等
+    # data 可能是指向一个文件，例如 erb :index
+    # 也可能是一个inline template
+    # 也可能是一个string 或者 block，代表 template 的内容
+    # options 是可选项
+    # views 是存放 views 的路径，默认是 "./views"，也可能是其他的自定义的路径
     def compile_template(engine, data, options, views)
       eat_errors = options.delete :eat_errors
+
+      # Tilt::Cache#fetch 方法，会查询时候cache中有个，如果有的话，
+      # 就用cache的，否则执行block
       template_cache.fetch engine, data, options, views do
+        # 获得 template engine
         template = Tilt[engine]
         raise "Template engine not found: #{engine}" if template.nil?
 
         case data
+        # 如果是模版指向某个文件
         when Symbol
+          # 获得 inline template 数据
           body, path, line = settings.templates[data]
+          # 如果是 inline template
           if body
+            # 如果 body 能够自解
             body = body.call if body.respond_to?(:call)
+            # 然后 返回一个 Tilt 的template实例
             template.new(path, line.to_i, options) { body }
           else
+            # 如果不是 inline template，那么就是一个文件
             found = false
             @preferred_extension = engine.to_s
+
             find_template(views, data, template) do |file|
+              # 这个file 是路径 ::File.join(views, "#{name}.#{@preferred_extension})
               path ||= file # keep the initial path rather than the last one
+              # 验证这个路径的有效性
               if found = File.exist?(file)
                 path = file
                 break
               end
             end
             throw :layout_missing if eat_errors and not found
+            # 返回一个 Tilt 的template实例
             template.new(path, 1, options)
           end
-        when Proc, String
+        # 如果 data 直接是模版的内容
+          when Proc, String
+          #生成body
           body = data.is_a?(String) ? Proc.new { data } : data
           caller = settings.caller_locations.first
+          # 生成路径和行数
           path = options[:path] || caller[0]
           line = options[:line] || caller[1]
+          # 返回一个 Tilt 的template实例
           template.new(path, line.to_i, options, &body)
         else
           raise ArgumentError, "Sorry, don't know how to render #{data.inspect}."
@@ -1048,8 +1086,10 @@ module Sinatra
     URI_INSTANCE = URI::Parser.new
 
     attr_accessor :app, :env, :request, :response, :params
+    # 这是一个 Tilt::Cache 的实例
     attr_reader   :template_cache
 
+    # 构造函数
     def initialize(app = nil)
       super()
       @app = app
@@ -1058,20 +1098,27 @@ module Sinatra
     end
 
     # Rack call interface.
+    # 复制一个新的实例，执行call!，让Sinatra跑起来
     def call(env)
       dup.call!(env)
     end
 
+    # 这个方法就是Sinatra开始跑起来的入口了
     def call!(env) # :nodoc:
+      # 做一定初始化的工作
       @env      = env
       @request  = Request.new(env)
       @response = Response.new
+      # 如果设置了 reload_templates，那么就清除 template_cache
       template_cache.clear if settings.reload_templates
 
       @response['Content-Type'] = nil
+      # 处理请求
       invoke { dispatch! }
+      # 处理错误
       invoke { error_block!(response.status) } unless @env['sinatra.error']
 
+      # 万一没有设置 Content-Type 根据内容设置，实在没有，就设置为 html
       unless @response['Content-Type']
         if Array === body and body[0].respond_to? :content_type
           content_type body[0].content_type
@@ -1080,6 +1127,7 @@ module Sinatra
         end
       end
 
+      # 结束，设置整个 response 的 Content-Length
       @response.finish
     end
 
@@ -1212,17 +1260,27 @@ module Sinatra
 
     # Attempt to serve static files from public directory. Throws :halt when
     # a matching file is found, returns nil otherwise.
+    # 提供 static 文件，会扔出 halt 被 invoke 捕获
+
     def static!(options = {})
+      # 如果public 文件夹没有设置，直接返回
       return if (public_dir = settings.public_folder).nil?
+      # 获得请求静态文件的路径
       path = File.expand_path("#{public_dir}#{URI_INSTANCE.unescape(request.path_info)}" )
+      # 返回 如果不是一个有效的文件路径
       return unless File.file?(path)
 
+      # 设置静态文件的路径
       env['sinatra.static_file'] = path
+      # 给静态文件设置 Cache-Control header
       cache_control(*settings.static_cache_control) if settings.static_cache_control?
+      # 用send_file 发送文件，因为是静态文件，不是下载的文件，所以需要把 disposition 设置为 nil
+      # send_file 会出发 halt
       send_file path, options.merge(:disposition => nil)
     end
 
     # Enable string or symbol key access to the nested params hash.
+    # 将参数转换成对key的类型不敏感的hash
     def indifferent_params(object)
       case object
       when Hash
@@ -1237,20 +1295,30 @@ module Sinatra
     end
 
     # Creates a Hash with indifferent access.
+    # 创建一个 key 可以是 string 或者是 symbol 的hash
+    # 就这个方法来说，并不是一个真正的 indifferent_hash
+    # 它只做了从 symbol 到 string 的转换，没有做 string 到 symbol 的转换
+    # 但是因为原始的数据的key都是string，所以使用起来没问题
     def indifferent_hash
       Hash.new { |hash, key| hash[key.to_s] if Symbol === key }
     end
 
     # Run the block with 'throw :halt' support and apply result to the response.
+    # 这个方法执行一个block，当这个block中有halt方法调用，就会在这个方法捕获
+    # 然后根据 halt 后面跟的参数，设置response
     def invoke
       res = catch(:halt) { yield }
 
+      # 如果参数是Interger 或者 String，那么就当作response的status
       res = [res] if Integer === res or String === res
+      # 如果 参数是数组，并且第一个是 Integer
+      # 就设置相应参数
       if Array === res and Integer === res.first
         res = res.dup
         status(res.shift)
         body(res.pop)
         headers(*res)
+      # 如果 res 是一个能相应 each 的block，就设置成body
       elsif res.respond_to? :each
         body res
       end
@@ -1258,12 +1326,16 @@ module Sinatra
     end
 
     # Dispatch a request with error handling.
+    # 这个方法就开始处理一个请求的入口了
     def dispatch!
       @params = indifferent_params(@request.params)
+      # todo 不知道在哪里定义的
       force_encoding(@params)
 
       invoke do
+        # 如果需要，先处理静态文件
         static! if settings.static? && (request.get? || request.head?)
+        # 执行 before filter 的内容
         filter! :before
         route!
       end
@@ -1271,6 +1343,7 @@ module Sinatra
       invoke { handle_exception!(boom) }
     ensure
       begin
+        # 执行 after filter的内容
         filter! :after unless env['sinatra.static_file']
       rescue ::Exception => boom
         invoke { handle_exception!(boom) } unless @env['sinatra.error']
