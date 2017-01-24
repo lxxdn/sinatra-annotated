@@ -1,13 +1,7 @@
-# coding: utf-8
-# frozen_string_literal: true
-
 # external dependencies
 require 'rack'
 require 'tilt'
 require 'rack/protection'
-require 'mustermann'
-require 'mustermann/sinatra'
-require 'mustermann/regular'
 
 # stdlib dependencies
 require 'thread'
@@ -16,6 +10,7 @@ require 'uri'
 
 # other files we need
 require 'sinatra/show_exceptions'
+require 'sinatra/ext'
 require 'sinatra/version'
 
 module Sinatra
@@ -62,7 +57,6 @@ module Sinatra
 
     alias secure? ssl?
 
-
     # 参考 http://stackoverflow.com/questions/17411391/whats-the-variable-http-x-forwarded-host-in-the-env-hash-in-middleware
     # 当 用户和服务器之间有代理，这个option就会被设置
     def forwarded?
@@ -83,13 +77,6 @@ module Sinatra
 
     def unlink?
       request_method == "UNLINK"
-    end
-
-    # 调用 Rack::Request 的 params 方法
-    def params
-      super
-    rescue Rack::Utils::ParameterTypeError, Rack::Utils::InvalidParameterError => e
-      raise BadRequest, "Invalid query parameters: #{e.message}"
     end
 
     private
@@ -198,7 +185,7 @@ module Sinatra
       if calculate_content_length?
         # if some other code has already set Content-Length, don't muck with it
         # currently, this would be the static file-handler
-        headers["Content-Length"] = body.inject(0) { |l, p| l + p.bytesize }.to_s
+        headers["Content-Length"] = body.inject(0) { |l, p| l + Rack::Utils.bytesize(p) }.to_s
       end
 
       [status.to_i, headers, result]
@@ -227,7 +214,7 @@ module Sinatra
   # handler directly. We do this here, so our middleware and middleware set up by the app will
   # still be able to run.
 
-  # 这个不是很看得懂
+  # todo 这个不是很看得懂
   class ExtendedRack < Struct.new(:app)
     def call(env)
       result, callback = app.call(env), env['async.callback']
@@ -277,10 +264,6 @@ module Sinatra
     end
   end
 
-  class BadRequest < TypeError #:nodoc:
-    def http_status; 400 end
-  end
-
   class NotFound < NameError #:nodoc:
     def http_status; 404 end
   end
@@ -289,9 +272,9 @@ module Sinatra
   # Methods available to routes, before/after filters, and views.
   module Helpers
     # Set or retrieve the response status code.
-    # 设置或者获得status
+     # 设置或者获得status
     def status(value = nil)
-      response.status = Rack::Utils.status_code(value) if value
+      response.status = value if value
       response.status
     end
 
@@ -308,17 +291,12 @@ module Sinatra
         def block.each; yield(call) end
         response.body = block
       elsif value
-        # Rack 2.0 returns a Rack::File::Iterator here instead of
-        # Rack::File as it was in the previous API.
-
         # 对于没有body，或者body不能计算长度的请求，去掉 Content-Length
-        unless request.head? || value.is_a?(Rack::File::Iterator) || value.is_a?(Stream)
-          headers.delete 'Content-Length'
-        end
+        headers.delete 'Content-Length' unless request.head? || value.is_a?(Rack::File) || value.is_a?(Stream)
         # 设置body
         response.body = value
       else
-        # 获去body
+        # 获取body
         response.body
       end
     end
@@ -335,7 +313,7 @@ module Sinatra
 
       # According to RFC 2616 section 14.30, "the field value consists of a
       # single absolute URI"
-      # 根据 RFC2616 302/303 类型的跳转应该是绝对跳转
+      #根据 RFC2616 302/303 类型的跳转应该是绝对跳转
       # 但是这里当 settings.absolute_redirects 被设置为false，会允许相对跳转
       # settings.prefixed_redirects 表示相对路径的时候，是否使用 script_name 作为前缀
       # 文档中有提到
@@ -345,18 +323,16 @@ module Sinatra
 
     # Generates the absolute URI for a given path in the app.
     # Takes Rack routers and reverse proxies into account.
-
-    #
     def uri(addr = nil, absolute = true, add_script_name = true)
-      return addr if addr =~ /\A[a-z][a-z0-9\+\.\-]*:/i
+      return addr if addr =~ /\A[A-z][A-z0-9\+\.\-]*:/、
       # 这里是一个trick，设置uri为host的数组，然后更改host
       # 这里其实就是修改了uri的值
-      uri = [host = String.new]
+      uri = [host = ""]
       # 如果是absolute，加上http/https
       if absolute
         host << "http#{'s' if request.secure?}://"
-        # 如果不是 80 或 443， host加上端口
         if request.forwarded? or request.port != (request.secure? ? 443 : 80)
+          # 如果不是 80 或 443， host加上端口
           host << request.host_with_port
         else
           host << request.host
@@ -413,7 +389,6 @@ module Sinatra
     def content_type(type = nil, params = {})
       # 获取 Content-Type
       return response['Content-Type'] unless type
-
       # 默认值依赖于template
       default = params.delete :default
       # 然后获得对应的 mime_type
@@ -426,14 +401,12 @@ module Sinatra
       unless params.include? :charset or settings.add_charset.all? { |p| not p === mime_type }
         params[:charset] = params.delete('charset') || settings.default_encoding
       end
-
       # 如果 mime_type 中含有 charset 了， 那么就从params中删除掉它
       params.delete :charset if mime_type.include? 'charset'
 
       # todo 不是很明白
       unless params.empty?
         mime_type << (mime_type.include?(';') ? ', ' : ';')
-
         mime_type << params.map do |key, val|
           val = val.inspect if val =~ /[";,]/
           "#{key}=#{val}"
@@ -446,7 +419,7 @@ module Sinatra
     # instructing the user agents to prompt to save.
 
     # 这个 api 告诉浏览器，这个response是要被保存的，而不是在浏览器打开
-    def attachment(filename = nil, disposition = :attachment)
+    def attachment(filename = nil, disposition = 'attachment')
       response['Content-Disposition'] = disposition.to_s
       if filename
         params = '; filename="%s"' % File.basename(filename)
@@ -468,21 +441,20 @@ module Sinatra
 
       disposition = opts[:disposition]
       filename    = opts[:filename]
-      disposition = :attachment if disposition.nil? and filename
-      filename    = path        if filename.nil?
+      disposition = 'attachment' if disposition.nil? and filename
+      filename    = path         if filename.nil?
       attachment(filename, disposition) if disposition
 
       last_modified opts[:last_modified] if opts[:last_modified]
 
-      file   = Rack::File.new(File.dirname(settings.app_file))
-
+      file      = Rack::File.new nil
+      file.path = path
       # 生成一个serve 文件的http 回复，处理了 304 和 http_range 的情况
-      result = file.serving(request, path)
-
+      result    = file.serving env
       result[1].each { |k,v| headers[k] ||= v }
       headers['Content-Length'] = result[1]['Content-Length']
       opts[:status] &&= Integer(opts[:status])
-      halt (opts[:status] || result[0]), result[2]
+      halt opts[:status] || result[0], result[2]
     rescue Errno::ENOENT
       not_found
     end
@@ -495,7 +467,6 @@ module Sinatra
     # handler is using.
     #
     # Scheduler has to respond to defer and schedule.
-
     # 这个class 用来作为response 的 body
     # 同时也作为一个scheduler，响应 schedule 和 defer 方法
     # 作为Rack的body，必须响应 each 方法
@@ -513,7 +484,7 @@ module Sinatra
       def close
         return if closed?
         @closed = true
-        @scheduler.schedule { @callbacks.each { |c| c.call } }
+        @scheduler.schedule { @callbacks.each { |c| c.call }}
       end
 
       # 这个方法是被各个 http 服务器调用的
@@ -568,7 +539,7 @@ module Sinatra
     # Specify response freshness policy for HTTP caches (Cache-Control header).
     # Any number of non-value directives (:public, :private, :no_cache,
     # :no_store, :must_revalidate, :proxy_revalidate) may be passed along with
-    # a Hash of value directives (:max_age, :min_stale, :s_maxage).
+    # a Hash of value directives (:max_age, :min_stale, :s_max_age).
     #
     #   cache_control :public, :must_revalidate, :max_age => 60
     #   => Cache-Control: public, must-revalidate, max-age=60
@@ -582,10 +553,10 @@ module Sinatra
       if values.last.kind_of?(Hash)
         hash = values.pop
         # 去掉不需要设置的属性
-        hash.reject! { |k, v| v == false }
+        hash.reject! { |k,v| v == false }
         # 将一些不需要值但又值为true的属性添加到 values
         # 并且将其从 hash 中删除
-        hash.reject! { |k, v| values << k if v == true }
+        hash.reject! { |k,v| values << k if v == true }
       else
         hash = {}
       end
@@ -596,7 +567,7 @@ module Sinatra
       # 从 :max_age => 60 转换成 max-age=60
       hash.each do |key, value|
         key = key.to_s.tr('_', '-')
-        value = value.to_i if ['max-age', 's-maxage'].include? key
+        value = value.to_i if key == "max-age"
         values << "#{key}=#{value}"
       end
 
@@ -609,8 +580,9 @@ module Sinatra
     # "values" arguments are passed to the #cache_control helper:
     #
     #   expires 500, :public, :must_revalidate
-    #   => Cache-Control: public, must-revalidate, max-age=500
+    #   => Cache-Control: public, must-revalidate, max-age=60
     #   => Expires: Mon, 08 Jun 2009 08:50:17 GMT
+    #
 
     # 这个 api 其实包装了 cache_control 方法
     # 它将过期的相对时间转换成绝对时间，作为 Expires 的值
@@ -706,7 +678,7 @@ module Sinatra
       value = "W/#{value}" if kind == :weak
       response['ETag'] = value
 
-      # 如果 先决条件是不匹配
+      # 如果先决条件是不匹配
       if success? or status == 304
         # 如果 etag 匹配
         if etag_matches? env['HTTP_IF_NONE_MATCH'], new_resource
@@ -715,7 +687,7 @@ module Sinatra
           halt(request.safe? ? 304 : 412)
         end
 
-        # 如果 先决条件是匹配，单这里 etag 不匹配， 那么返回412
+        # 如果 先决条件是匹配，但这里 etag 不匹配， 那么返回412
         if env['HTTP_IF_MATCH']
           halt 412 unless etag_matches? env['HTTP_IF_MATCH'], new_resource
         end
@@ -762,12 +734,22 @@ module Sinatra
     # Used by #expires and #last_modified.
     # 将 value 转换成 time 的方法
     def time_for(value)
-      if value.is_a? Numeric
-        Time.at value
-      elsif value.respond_to? :to_s
-        Time.parse value.to_s
-      else
+      if value.respond_to? :to_time
         value.to_time
+      elsif value.is_a? Time
+        value
+      elsif value.respond_to? :new_offset
+        # DateTime#to_time does the same on 1.9
+        d = value.new_offset 0
+        t = Time.utc d.year, d.mon, d.mday, d.hour, d.min, d.sec + d.sec_fraction
+        t.getlocal
+      elsif value.respond_to? :mday
+        # Date#to_time does the same on 1.9
+        Time.local(value.year, value.mon, value.mday)
+      elsif value.is_a? Numeric
+        Time.at value
+      else
+        Time.parse value.to_s
       end
     rescue ArgumentError => boom
       raise boom
@@ -783,7 +765,7 @@ module Sinatra
       # 如果是 * 表示全部匹配
       # 那么对于不是new_resource 那么 etag 就是匹配的
       return !new_resource if list == '*'
-      # 检查是否有任何一个 etag 匹配
+       # 检查是否有任何一个 etag 匹配
       list.to_s.split(/\s*,\s*/).include? response['ETag']
     end
 
@@ -856,7 +838,7 @@ module Sinatra
       render :less, template, options, locals
     end
 
-    def stylus(template, options = {}, locals = {})
+    def stylus(template, options={}, locals={})
       options.merge! :layout => false, :default_content_type => :css
       render :styl, template, options, locals
     end
@@ -968,7 +950,7 @@ module Sinatra
     def render(engine, data, options = {}, locals = {}, &block)
       # merge app-level options
       # 获得这个 engine 的配置
-      engine_options = settings.respond_to?(engine) ? settings.send(engine) : {}
+      engine_options  = settings.respond_to?(engine) ? settings.send(engine) : {}
       # 将传进来的参数和settings的参数合并
       options.merge!(engine_options) { |key, v1, v2| v1 }
 
@@ -982,8 +964,7 @@ module Sinatra
       layout          = engine_options[:layout] if layout.nil? or (layout == true && engine_options[:layout] != false)
       layout          = @default_layout         if layout.nil? or layout == true
       layout_options  = options.delete(:layout_options) || {}
-      content_type    = options.delete(:default_content_type)
-      content_type    = options.delete(:content_type)   || content_type
+      content_type    = options.delete(:content_type)   || options.delete(:default_content_type)
       # 对于一些不支持layout的template engine，例如 set :rdoc, :layout_engine => :erb
       layout_engine   = options.delete(:layout_engine)  || engine
       scope           = options.delete(:scope)          || self
@@ -998,6 +979,7 @@ module Sinatra
         layout_was      = @default_layout
         @default_layout = false
         template        = compile_template(engine, data, options, views)
+        # 这里是将render一个layout，并将 block 的内容包在里面
         output          = template.render(scope, locals, &block)
       ensure
         @default_layout = layout_was
@@ -1005,6 +987,7 @@ module Sinatra
 
       # render layout
       if layout
+        # 这里因为是render一个layout，所以将layout的设置关闭，然后调用 render 将layout包着output的内容render出来
         options = options.merge(:views => views, :layout => false, :eat_errors => eat_errors, :scope => scope).
                 merge!(layout_options)
         catch(:layout_missing) { return render(layout_engine, layout, options, locals) { output } }
@@ -1027,12 +1010,11 @@ module Sinatra
       # Tilt::Cache#fetch 方法，会查询时候cache中有个，如果有的话，
       # 就用cache的，否则执行block
       template_cache.fetch engine, data, options, views do
-        # 获得 template engine
         template = Tilt[engine]
         raise "Template engine not found: #{engine}" if template.nil?
 
         case data
-        # 如果是模版指向某个文件
+        # 如果是模版指向某个文件 或者 inline 模版
         when Symbol
           # 获得 inline template 数据
           body, path, line = settings.templates[data]
@@ -1046,7 +1028,6 @@ module Sinatra
             # 如果不是 inline template，那么就是一个文件
             found = false
             @preferred_extension = engine.to_s
-
             find_template(views, data, template) do |file|
               # 这个file 是路径 ::File.join(views, "#{name}.#{@preferred_extension})
               path ||= file # keep the initial path rather than the last one
@@ -1061,13 +1042,11 @@ module Sinatra
             template.new(path, 1, options)
           end
         # 如果 data 直接是模版的内容
-          when Proc, String
-          #生成body
+        when Proc, String
+           #生成body
           body = data.is_a?(String) ? Proc.new { data } : data
-          caller = settings.caller_locations.first
           # 生成路径和行数
-          path = options[:path] || caller[0]
-          line = options[:line] || caller[1]
+          path, line = settings.caller_locations.first
           # 返回一个 Tilt 的template实例
           template.new(path, line.to_i, options, &body)
         else
@@ -1083,13 +1062,12 @@ module Sinatra
     include Helpers
     include Templates
 
-    URI_INSTANCE = URI::Parser.new
+    URI_INSTANCE = URI.const_defined?(:Parser) ? URI::Parser.new : URI
 
     attr_accessor :app, :env, :request, :response, :params
     # 这是一个 Tilt::Cache 的实例
     attr_reader   :template_cache
 
-    # 构造函数
     def initialize(app = nil)
       super()
       @app = app
@@ -1098,6 +1076,7 @@ module Sinatra
     end
 
     # Rack call interface.
+    # 这个每个基于Rack的框架的入口
     # 复制一个新的实例，执行call!，让Sinatra跑起来
     def call(env)
       dup.call!(env)
@@ -1109,8 +1088,10 @@ module Sinatra
       @env      = env
       @request  = Request.new(env)
       @response = Response.new
+      @params   = indifferent_params(@request.params)
       # 如果设置了 reload_templates，那么就清除 template_cache
       template_cache.clear if settings.reload_templates
+      force_encoding(@params)
 
       @response['Content-Type'] = nil
       # 处理请求
@@ -1180,17 +1161,19 @@ module Sinatra
     private
 
     # Run filters defined on the class and all superclasses.
+    # 执行filter的内容，type是 before 或者 after
     def filter!(type, base = settings)
       filter! type, base.superclass if base.superclass.respond_to?(:filters)
+      # 遍历每一个 type 类型的filter， 然后
       base.filters[type].each { |args| process_route(*args) }
     end
 
     # Run routes defined on the class and all superclasses.
     def route!(base = settings, pass_block = nil)
       if routes = base.routes[@request.request_method]
-        routes.each do |pattern, conditions, block|
-          returned_pass_block = process_route(pattern, conditions) do |*args|
-            env['sinatra.route'] = "#{@request.request_method} #{pattern}"
+        routes.each do |pattern, keys, conditions, block|
+          returned_pass_block = process_route(pattern, keys, conditions) do |*args|
+            env['sinatra.route'] = block.instance_variable_get(:@route_name)
             route_eval { block[*args] }
           end
 
@@ -1218,29 +1201,25 @@ module Sinatra
     # Revert params afterwards.
     #
     # Returns pass block.
-    def process_route(pattern, conditions, block = nil, values = [])
+    def process_route(pattern, keys, conditions, block = nil, values = [])
+      # 读出请求的路径
       route = @request.path_info
       route = '/' if route.empty? and not settings.empty_path_info?
-      return unless params = pattern.params(route)
+      # 如果不匹配，就返回
+      return unless match = pattern.match(route)
+      # 这里把url中的参数都取出来了例如 /restaurant/:rid/food/:fid 就会取出 rid 和 fid
+      values += match.captures.map! { |v| force_encoding URI_INSTANCE.unescape(v) if v }
 
-      params.delete("ignore") # TODO: better params handling, maybe turn it into "smart" object or detect changes
-      original, @params = @params, @params.merge(params) if params.any?
-
-      if pattern.is_a? Mustermann::Regular
-        captures           = pattern.match(route).captures
-        values            += captures
-        @params[:captures] = captures
-      else
-        values += params.values.flatten
+      if values.any?
+        # splat 就是route中的星号，会在之后被加进来
+        original, @params = params, params.merge('splat' => [], 'captures' => values)
+        keys.zip(values) { |k,v| Array === @params[k] ? @params[k] << v : @params[k] = v if v }
       end
 
       catch(:pass) do
         conditions.each { |c| throw :pass if c.bind(self).call == false }
         block ? block[self, values] : yield(self, values)
       end
-    rescue
-      @env['sinatra.error.params'] = @params
-      raise
     ensure
       @params = original if original
     end
@@ -1260,22 +1239,13 @@ module Sinatra
 
     # Attempt to serve static files from public directory. Throws :halt when
     # a matching file is found, returns nil otherwise.
-    # 提供 static 文件，会扔出 halt 被 invoke 捕获
-
     def static!(options = {})
-      # 如果public 文件夹没有设置，直接返回
       return if (public_dir = settings.public_folder).nil?
-      # 获得请求静态文件的路径
       path = File.expand_path("#{public_dir}#{URI_INSTANCE.unescape(request.path_info)}" )
-      # 返回 如果不是一个有效的文件路径
       return unless File.file?(path)
 
-      # 设置静态文件的路径
       env['sinatra.static_file'] = path
-      # 给静态文件设置 Cache-Control header
       cache_control(*settings.static_cache_control) if settings.static_cache_control?
-      # 用send_file 发送文件，因为是静态文件，不是下载的文件，所以需要把 disposition 设置为 nil
-      # send_file 会出发 halt
       send_file path, options.merge(:disposition => nil)
     end
 
@@ -1300,7 +1270,7 @@ module Sinatra
     # 它只做了从 symbol 到 string 的转换，没有做 string 到 symbol 的转换
     # 但是因为原始的数据的key都是string，所以使用起来没问题
     def indifferent_hash
-      Hash.new { |hash, key| hash[key.to_s] if Symbol === key }
+      Hash.new {|hash,key| hash[key.to_s] if Symbol === key }
     end
 
     # Run the block with 'throw :halt' support and apply result to the response.
@@ -1310,10 +1280,10 @@ module Sinatra
       res = catch(:halt) { yield }
 
       # 如果参数是Interger 或者 String，那么就当作response的status
-      res = [res] if Integer === res or String === res
+      res = [res] if Fixnum === res or String === res
       # 如果 参数是数组，并且第一个是 Integer
       # 就设置相应参数
-      if Array === res and Integer === res.first
+      if Array === res and Fixnum === res.first
         res = res.dup
         status(res.shift)
         body(res.pop)
@@ -1328,10 +1298,6 @@ module Sinatra
     # Dispatch a request with error handling.
     # 这个方法就开始处理一个请求的入口了
     def dispatch!
-      @params = indifferent_params(@request.params)
-      # todo 不知道在哪里定义的
-      force_encoding(@params)
-
       invoke do
         # 如果需要，先处理静态文件
         static! if settings.static? && (request.get? || request.head?)
@@ -1352,9 +1318,6 @@ module Sinatra
 
     # Error handling during requests.
     def handle_exception!(boom)
-      if error_params = @env['sinatra.error.params']
-        @params = @params.merge(error_params)
-      end
       @env['sinatra.error'] = boom
 
       if boom.respond_to? :http_status
@@ -1370,7 +1333,9 @@ module Sinatra
       if server_error?
         dump_errors! boom if settings.dump_errors?
         raise boom if settings.show_exceptions? and settings.show_exceptions != :after_handler
-      elsif not_found?
+      end
+
+      if not_found?
         headers['X-Cascade'] = 'pass' if settings.x_cascade?
         body '<h1>Not Found</h1>'
       end
@@ -1434,7 +1399,7 @@ module Sinatra
         @extensions     = []
 
         if superclass.respond_to?(:templates)
-          @templates = Hash.new { |hash, key| superclass.templates[key] }
+          @templates = Hash.new { |hash,key| superclass.templates[key] }
         else
           @templates = {}
         end
@@ -1480,7 +1445,7 @@ module Sinatra
         case value
         when Proc
           getter = value
-        when Symbol, Integer, FalseClass, TrueClass, NilClass
+        when Symbol, Fixnum, FalseClass, TrueClass, NilClass
           getter = value.inspect
         when Hash
           setter = proc do |val|
@@ -1509,16 +1474,16 @@ module Sinatra
       # class, or an HTTP status code to specify which errors should be
       # handled.
       def error(*codes, &block)
-        args  = compile! "ERROR", /.*/, block
-        codes = codes.flat_map(&method(:Array))
+        args  = compile! "ERROR", //, block
+        codes = codes.map { |c| Array(c) }.flatten
         codes << Exception if codes.empty?
-        codes << Sinatra::NotFound if codes.include?(404)
         codes.each { |c| (@errors[c] ||= []) << args }
       end
 
       # Sugar for `error(404) { ... }`
       def not_found(&block)
         error(404, &block)
+        error(Sinatra::NotFound, &block)
       end
 
       # Define a named template. The block must return the template source.
@@ -1556,7 +1521,7 @@ module Sinatra
           data.each_line do |line|
             lines += 1
             if line =~ /^@@\s*(.*\S)\s*$/
-              template = force_encoding(String.new, encoding)
+              template = force_encoding('', encoding)
               templates[$1.to_sym] = [template, file, lines]
             elsif template
               template << line
@@ -1585,20 +1550,21 @@ module Sinatra
       # Define a before filter; runs before all requests within the same
       # context as route handlers and may access/modify the request and
       # response.
-      def before(path = /.*/, **options, &block)
+      def before(path = nil, options = {}, &block)
         add_filter(:before, path, options, &block)
       end
 
       # Define an after filter; runs after all requests within the same
       # context as route handlers and may access/modify the request and
       # response.
-      def after(path = /.*/, **options, &block)
+      def after(path = nil, options = {}, &block)
         add_filter(:after, path, options, &block)
       end
 
       # add a filter
-      def add_filter(type, path = /.*/, **options, &block)
-        filters[type] << compile!(type, path, block, options)
+      def add_filter(type, path = nil, options = {}, &block)
+        path, options = //, path if path.respond_to?(:each_pair)
+        filters[type] << compile!(type, path || //, block, options)
       end
 
       # Add a route condition. The route is considered non-matching when the
@@ -1678,7 +1644,7 @@ module Sinatra
         return unless running?
         # Use Thin's hard #stop! if available, otherwise just #stop.
         running_server.respond_to?(:stop!) ? running_server.stop! : running_server.stop
-        $stderr.puts "== Sinatra has ended his set (crowd applauds)" unless supress_messages?
+        $stderr.puts "== Sinatra has ended his set (crowd applauds)" unless handler_name =~/cgi/i
         set :running_server, nil
         set :handler_name, nil
       end
@@ -1759,12 +1725,8 @@ module Sinatra
 
       # Starts the server by running the Rack Handler.
       def start_server(handler, server_settings, handler_name)
-        # Ensure we initialize middleware before startup, to match standard Rack
-        # behavior, by ensuring an instance exists:
-        prototype
-        # Run the instance we created:
         handler.run(self, server_settings) do |server|
-          unless supress_messages?
+          unless handler_name =~ /cgi/i
             $stderr.puts "== Sinatra (v#{Sinatra::VERSION}) has taken the stage on #{port} for #{environment} with backup from #{handler_name}"
           end
 
@@ -1775,10 +1737,6 @@ module Sinatra
 
           yield server if block_given?
         end
-      end
-
-      def supress_messages?
-        handler_name =~ /cgi/i || quiet
       end
 
       def setup_traps
@@ -1798,7 +1756,8 @@ module Sinatra
 
       # Dynamically defines a method on settings.
       def define_singleton(name, content = Proc.new)
-        singleton_class.class_eval do
+        # replace with call to singleton_class once we're 1.9 only
+        (class << self; self; end).class_eval do
           undef_method(name) if method_defined? name
           String === content ? class_eval("def #{name}() #{content}; end") : define_method(name, &content)
         end
@@ -1855,28 +1814,115 @@ module Sinatra
       end
 
       def generate_method(method_name, &block)
+        method_name = method_name.to_sym
         define_method(method_name, &block)
         method = instance_method method_name
         remove_method method_name
         method
       end
 
-      def compile!(verb, path, block, **options)
+      def compile!(verb, path, block, options = {})
         options.each_pair { |option, args| send(option, *args) }
-
-        pattern                 = compile(path)
         method_name             = "#{verb} #{path}"
         unbound_method          = generate_method(method_name, &block)
+        pattern, keys           = compile path
         conditions, @conditions = @conditions, []
-        wrapper                 = block.arity != 0 ?
-          proc { |a, p| unbound_method.bind(a).call(*p) } :
-          proc { |a, p| unbound_method.bind(a).call }
 
-        [ pattern, conditions, wrapper ]
+        wrapper                 = block.arity != 0 ?
+          proc { |a,p| unbound_method.bind(a).call(*p) } :
+          proc { |a,p| unbound_method.bind(a).call }
+        wrapper.instance_variable_set(:@route_name, method_name)
+
+        [ pattern, keys, conditions, wrapper ]
       end
 
       def compile(path)
-        Mustermann.new(path)
+        if path.respond_to? :to_str
+          keys = []
+
+          # Split the path into pieces in between forward slashes.
+          # A negative number is given as the second argument of path.split
+          # because with this number, the method does not ignore / at the end
+          # and appends an empty string at the end of the return value.
+          #
+          segments = path.split('/', -1).map! do |segment|
+            ignore = []
+
+            # Special character handling.
+            #
+            pattern = segment.to_str.gsub(/[^\?\%\\\/\:\*\w]|:(?!\w)/) do |c|
+              ignore << escaped(c).join if c.match(/[\.@]/)
+              patt = encoded(c)
+              patt.gsub(/%[\da-fA-F]{2}/) do |match|
+                match.split(//).map! { |char| char == char.downcase ? char : "[#{char}#{char.downcase}]" }.join
+              end
+            end
+
+            ignore = ignore.uniq.join
+
+            # Key handling.
+            #
+            pattern.gsub(/((:\w+)|\*)/) do |match|
+              if match == "*"
+                keys << 'splat'
+                "(.*?)"
+              else
+                keys << $2[1..-1]
+                ignore_pattern = safe_ignore(ignore)
+
+                ignore_pattern
+              end
+            end
+          end
+
+          # Special case handling.
+          #
+          if last_segment = segments[-1] and last_segment.match(/\[\^\\\./)
+            parts = last_segment.rpartition(/\[\^\\\./)
+            parts[1] = '[^'
+            segments[-1] = parts.join
+          end
+          [/\A#{segments.join('/')}\z/, keys]
+        elsif path.respond_to?(:keys) && path.respond_to?(:match)
+          [path, path.keys]
+        elsif path.respond_to?(:names) && path.respond_to?(:match)
+          [path, path.names]
+        elsif path.respond_to? :match
+          [path, []]
+        else
+          raise TypeError, path
+        end
+      end
+
+      def encoded(char)
+        enc = URI_INSTANCE.escape(char)
+        enc = "(?:#{escaped(char, enc).join('|')})" if enc == char
+        enc = "(?:#{enc}|#{encoded('+')})" if char == " "
+        enc
+      end
+
+      def escaped(char, enc = URI_INSTANCE.escape(char))
+        [Regexp.escape(enc), URI_INSTANCE.escape(char, /./)]
+      end
+
+      def safe_ignore(ignore)
+        unsafe_ignore = []
+        ignore = ignore.gsub(/%[\da-fA-F]{2}/) do |hex|
+          unsafe_ignore << hex[1..2]
+          ''
+        end
+        unsafe_patterns = unsafe_ignore.map! do |unsafe|
+          chars = unsafe.split(//).map! do |char|
+            char == char.downcase ? char : char + char.downcase
+          end
+
+          "|(?:%[^#{chars[0]}].|%[#{chars[0]}][^#{chars[1]}])"
+        end
+        if unsafe_patterns.length > 0
+          "((?:[^#{ignore}/?#%]#{unsafe_patterns.join()})+)"
+        else
+          "([^#{ignore}/?#]+)"
+        end
       end
 
       def setup_default_middleware(builder)
@@ -1921,16 +1967,10 @@ module Sinatra
       def setup_protection(builder)
         return unless protection?
         options = Hash === protection ? protection.dup : {}
-        options = {
-          img_src:  "'self' data:",
-          font_src: "'self'"
-        }.merge options
-
-        protect_session = options.fetch(:session) { sessions? }
-        options[:without_session] = !protect_session
-
+        protect_session  = options.fetch(:session) { sessions? }
+        options[:except] = Array options[:except]
+        options[:except] += [:session_hijacking, :remote_token] unless protect_session
         options[:reaction] ||= :drop_session
-
         builder.use Rack::Protection, options
       end
 
@@ -1939,7 +1979,7 @@ module Sinatra
         options = {}
         options[:secret] = session_secret if session_secret?
         options.merge! sessions.to_hash if sessions.respond_to? :to_hash
-        builder.use session_store, options
+        builder.use Rack::Session::Cookie, options
       end
 
       def detect_rack_handler
@@ -1948,6 +1988,8 @@ module Sinatra
           begin
             return Rack::Handler.get(server_name.to_s)
           rescue LoadError, NameError
+          rescue ArgumentError
+            Sinatra::Ext.get_handler(server_name.to_s)
           end
         end
         fail "Server handler (#{servers.join(',')}) not found."
@@ -2006,12 +2048,11 @@ module Sinatra
 
     reset!
 
-    set :environment, (ENV['APP_ENV'] || ENV['RACK_ENV'] || :development).to_sym
+    set :environment, (ENV['RACK_ENV'] || :development).to_sym
     set :raise_errors, Proc.new { test? }
     set :dump_errors, Proc.new { !test? }
     set :show_exceptions, Proc.new { development? }
     set :sessions, false
-    set :session_store, Rack::Session::Cookie
     set :logging, false
     set :protection, true
     set :method_override, false
@@ -2042,7 +2083,6 @@ module Sinatra
     set :server, %w[HTTP webrick]
     set :bind, Proc.new { development? ? 'localhost' : '0.0.0.0' }
     set :port, Integer(ENV['PORT'] && !ENV['PORT'].empty? ? ENV['PORT'] : 4567)
-    set :quiet, false
 
     ruby_engine = defined?(RUBY_ENGINE) && RUBY_ENGINE
 
@@ -2118,7 +2158,7 @@ module Sinatra
             </style>
           </head>
           <body>
-            <h2>Sinatra doesn’t know this ditty.</h2>
+            <h2>Sinatra doesn&rsquo;t know this ditty.</h2>
             <img src='#{uri "/__sinatra__/404.png"}'>
             <div id="c">
               Try this:
@@ -2139,14 +2179,14 @@ module Sinatra
   # top-level. Subclassing Sinatra::Base is highly recommended for
   # modular applications.
   class Application < Base
-    set :logging, Proc.new { !test? }
+    set :logging, Proc.new { ! test? }
     set :method_override, true
-    set :run, Proc.new { !test? }
+    set :run, Proc.new { ! test? }
     set :session_secret, Proc.new { super() unless development? }
     set :app_file, nil
 
     def self.register(*extensions, &block) #:nodoc:
-      added_methods = extensions.flat_map(&:public_instance_methods)
+      added_methods = extensions.map {|m| m.public_instance_methods }.flatten
       Delegator.delegate(*added_methods)
       super(*extensions, &block)
     end
