@@ -1149,8 +1149,10 @@ module Sinatra
     end
 
     # Forward the request to the downstream app -- middleware only.
+    # 如果这是一个中间件，那么forward会向下派送这个请求
     def forward
       fail "downstream app not set" unless @app.respond_to? :call
+      # 向下派送给 @app
       status, headers, body = @app.call env
       @response.status = status
       @response.body = body
@@ -1170,6 +1172,7 @@ module Sinatra
 
     # Run routes defined on the class and all superclasses.
     def route!(base = settings, pass_block = nil)
+
       if routes = base.routes[@request.request_method]
         routes.each do |pattern, keys, conditions, block|
           returned_pass_block = process_route(pattern, keys, conditions) do |*args|
@@ -1201,6 +1204,8 @@ module Sinatra
     # Revert params afterwards.
     #
     # Returns pass block.
+    # todo 重看
+    # 这个方法会匹配路径，如果路径想符合，就给他设置参数
     def process_route(pattern, keys, conditions, block = nil, values = [])
       # 读出请求的路径
       route = @request.path_info
@@ -1213,9 +1218,12 @@ module Sinatra
       if values.any?
         # splat 就是route中的星号，会在之后被加进来
         original, @params = params, params.merge('splat' => [], 'captures' => values)
+        # todo 再看
         keys.zip(values) { |k,v| Array === @params[k] ? @params[k] << v : @params[k] = v if v }
       end
 
+      # 如果condition也符合，就执行block的内容
+      # todo block的内容是什么？
       catch(:pass) do
         conditions.each { |c| throw :pass if c.bind(self).call == false }
         block ? block[self, values] : yield(self, values)
@@ -1229,6 +1237,7 @@ module Sinatra
     # as middleware (@app is non-nil); when no downstream app is set, raise
     # a NotFound exception. Subclasses can override this method to perform
     # custom route miss logic.
+    # 如果路由找不到，就尝试向下派发(如果是中间件)，否则就是404
     def route_missing
       if @app
         forward
@@ -1239,13 +1248,19 @@ module Sinatra
 
     # Attempt to serve static files from public directory. Throws :halt when
     # a matching file is found, returns nil otherwise.
+    # 发送静态文件的方法
     def static!(options = {})
+      # 必须要设置过静态文件的路径
       return if (public_dir = settings.public_folder).nil?
+      # 设置静态文件path
       path = File.expand_path("#{public_dir}#{URI_INSTANCE.unescape(request.path_info)}" )
+      # 检查是不是一个文件
       return unless File.file?(path)
 
       env['sinatra.static_file'] = path
+      # 如果需要，设置 cache_control
       cache_control(*settings.static_cache_control) if settings.static_cache_control?
+      # 通过 send_file 发送文件
       send_file path, options.merge(:disposition => nil)
     end
 
@@ -1317,9 +1332,12 @@ module Sinatra
     end
 
     # Error handling during requests.
+    # 处理错误信息
     def handle_exception!(boom)
+
       @env['sinatra.error'] = boom
 
+      # 设置 http 状态码
       if boom.respond_to? :http_status
         status(boom.http_status)
       elsif settings.use_code? and boom.respond_to? :code and boom.code.between? 400, 599
@@ -1328,13 +1346,19 @@ module Sinatra
         status(500)
       end
 
+      # 如果 状态码 不是400 到 599，强行设置为 500
       status(500) unless status.between? 400, 599
 
+      # 如果是 500类型的错误
       if server_error?
+        # 把错误 dump 出来
         dump_errors! boom if settings.dump_errors?
+        # 正常情况，会在浏览器里显示stack trace，除非手动关闭，或者设置了 after_handler
         raise boom if settings.show_exceptions? and settings.show_exceptions != :after_handler
       end
 
+      # 如果是 404 会设置X-cascade 让其他路由去处理
+      # 一般是传给其他的中间件去处理这个错误
       if not_found?
         headers['X-Cascade'] = 'pass' if settings.x_cascade?
         body '<h1>Not Found</h1>'
@@ -1347,6 +1371,7 @@ module Sinatra
     end
 
     # Find an custom error block for the key(s) specified.
+    # 找到对应的错误处理的block
     def error_block!(key, *block_params)
       base = settings
       while base.respond_to?(:errors)
@@ -1362,6 +1387,7 @@ module Sinatra
       error_block!(key.superclass, *block_params)
     end
 
+    # 将错误信息dump出来
     def dump_errors!(boom)
       msg = ["#{Time.now.strftime("%Y-%m-%d %H:%M:%S")} - #{boom.class} - #{boom.message}:", *boom.backtrace].join("\n\t")
       @env['rack.errors'].puts(msg)
@@ -1425,28 +1451,41 @@ module Sinatra
 
       # Sets an option to the given value.  If the value is a proc,
       # the proc will be called every time the option is accessed.
+      # 这个方法设置一个option，这个option的值可以是一个普通的对象，也可以是一个block
+      # 这里的 not_set 是个小技巧，允许这个方法接受普通对象或者block，值得学习
       def set(option, value = (not_set = true), ignore_setter = false, &block)
+        # 如果给了一个block，那么就不应该给值
+        # 如果写 set :option, :foo, { block }, 那么not_set 就是nil，这个if条件成立
         raise ArgumentError if block and !not_set
         value, not_set = block, false if block
 
+        # 如果没有给block，而且也没有给value，那么只可能option是一个hash
+        # 否则就报错
         if not_set
           raise ArgumentError unless option.respond_to?(:each)
           option.each { |k,v| set(k, v) }
           return self
         end
 
+        # 如果有setter方法，并且可以被赋值
         if respond_to?("#{option}=") and not ignore_setter
+          # 调用这个option的setter方法
           return __send__("#{option}=", value)
         end
 
+        # 定义setter和getter方法
         setter = proc { |val| set option, val, true }
         getter = proc { value }
 
         case value
+        # 如果value是个 Proc, 那么getter方法直接就是这个proc
+        # 调用getter方法的时候就能获得这个proc的值
         when Proc
           getter = value
+        # 如果是个可以直接展示的值，就直接展示
         when Symbol, Fixnum, FalseClass, TrueClass, NilClass
           getter = value.inspect
+        # 如果是个Hash， 那么setter方法将值merge到原有的值里
         when Hash
           setter = proc do |val|
             val = value.merge val if Hash === val
@@ -1454,6 +1493,7 @@ module Sinatra
           end
         end
 
+        # 定义了 getter setter 和 ? 方法
         define_singleton("#{option}=", setter) if setter
         define_singleton(option, getter) if getter
         define_singleton("#{option}?", "!!#{option}") unless method_defined? "#{option}?"
@@ -1461,11 +1501,13 @@ module Sinatra
       end
 
       # Same as calling `set :option, true` for each of the given options.
+      # 就是 set :option, true 方法
       def enable(*opts)
         opts.each { |key| set(key, true) }
       end
 
       # Same as calling `set :option, false` for each of the given options.
+      # 就是 set :option, false 方法
       def disable(*opts)
         opts.each { |key| set(key, false) }
       end
@@ -1473,6 +1515,7 @@ module Sinatra
       # Define a custom error handler. Optionally takes either an Exception
       # class, or an HTTP status code to specify which errors should be
       # handled.
+      # 错误处理函数
       def error(*codes, &block)
         args  = compile! "ERROR", //, block
         codes = codes.map { |c| Array(c) }.flatten
@@ -1569,6 +1612,7 @@ module Sinatra
 
       # Add a route condition. The route is considered non-matching when the
       # block returns false.
+      # 这个方法生成一个condition 方法，加入到 @conditions 列表中
       def condition(name = "#{caller.first[/`.*'/]} condition", &block)
         @conditions << generate_method(name, &block)
       end
@@ -1588,6 +1632,7 @@ module Sinatra
 
       # Defining a `GET` handler also automatically defines
       # a `HEAD` handler.
+      # 定义 get 方法的路由
       def get(path, opts = {}, &block)
         conditions = @conditions.dup
         route('GET', path, opts, &block)
@@ -1755,15 +1800,20 @@ module Sinatra
       end
 
       # Dynamically defines a method on settings.
+      # 动态生成方法，这些方法都是定义在Base上，也就是 settings上
       def define_singleton(name, content = Proc.new)
         # replace with call to singleton_class once we're 1.9 only
+        # class << self; self; end方法返回了元类，然后将其打开
         (class << self; self; end).class_eval do
+          # 取消定义原来的方法
           undef_method(name) if method_defined? name
+          # 定义方法，如果是string，就创建一个方法，是block，就调用 define_method
           String === content ? class_eval("def #{name}() #{content}; end") : define_method(name, &content)
         end
       end
 
       # Condition for matching host name. Parameter might be String or Regexp.
+      #
       def host_name(pattern)
         condition { pattern === request.host }
       end
@@ -1799,38 +1849,64 @@ module Sinatra
         end
       end
 
+      # 这个方法定义了路由
       def route(verb, path, options = {}, &block)
         # Because of self.options.host
+        # 如果option中含有 host 则设置设置host_name 作为route的条件
         host_name(options.delete(:host)) if options.key?(:host)
+        # empty_path_info 是为了判断是否有空path的路径存在
+        # 如果没有，会在没有path的请求最后加上 '/' 结尾
         enable :empty_path_info if path == "" and empty_path_info.nil?
+        # signature是一个数组包含
+        # - pattern 这个路由对应的正则
+        # - keys 这个路由中可以抓到的 key
+        # - conditions 匹配这个路由的其他条件
+        # - wrapper 这个路由对应的执行方法
         signature = compile!(verb, path, block, options)
+        # 将这个signature 放入到对应的路由hash表中
         (@routes[verb] ||= []) << signature
+        # 看看添加新的route 会不会触发钩子
         invoke_hook(:route_added, verb, path, block)
         signature
       end
 
+      # 这个方法会查找是否有对应某个名字的钩子
+      # 如果有，就执行
       def invoke_hook(name, *args)
         extensions.each { |e| e.send(name, *args) if e.respond_to?(name) }
       end
 
+      # 这个方法也是生成函数，但是生成的是一个Unbound Method
       def generate_method(method_name, &block)
         method_name = method_name.to_sym
+        # 这里定义了一个方法在 Sinatra::Base 上
         define_method(method_name, &block)
+        # 然后取出这个方法
         method = instance_method method_name
+        # 将绑定在Sinatra::Base上的方法删掉
         remove_method method_name
         method
       end
 
+      # 将一个路由编译成 [路由正则，路由中的关键词，路由触发条件，路由处理block]
       def compile!(verb, path, block, options = {})
+        # 为每个option 设置值
         options.each_pair { |option, args| send(option, *args) }
+        # 创建一个这个route特有的方法名
         method_name             = "#{verb} #{path}"
+        # 创建一个unbound 方法 其实就是我们给一个route定义的方法
         unbound_method          = generate_method(method_name, &block)
+        # 这里将用户定义的path 转换成 pattern(正则) 和 keys(route中需要匹配的参数)
         pattern, keys           = compile path
+        # 把路由的condition保存下载，清空@conditions
         conditions, @conditions = @conditions, []
 
+        # 生成一个叫wrapper的block, artiy 可以获得一个block需要几个参数，需要参数则传参数
+        # 不需要参数，直接调用 unbound method
         wrapper                 = block.arity != 0 ?
           proc { |a,p| unbound_method.bind(a).call(*p) } :
           proc { |a,p| unbound_method.bind(a).call }
+        # 给这个block设置一个route_name 供之后route! 方法使用
         wrapper.instance_variable_set(:@route_name, method_name)
 
         [ pattern, keys, conditions, wrapper ]
