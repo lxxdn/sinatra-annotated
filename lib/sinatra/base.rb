@@ -1171,30 +1171,41 @@ module Sinatra
     end
 
     # Run routes defined on the class and all superclasses.
+    # 运行 route 对应的 block, pass_block 是子类处理完之后传上来的
     def route!(base = settings, pass_block = nil)
-
+      # 先过滤掉 http method，取出属于同一类型的请求处理方法
       if routes = base.routes[@request.request_method]
+        # 每一个可能的路径都经过 process_route 去匹配，
+        # 如果匹配，则设置 params 然后执行路由对应的block的内容
         routes.each do |pattern, keys, conditions, block|
+          # 一般来说，执行process_route 之后就会被 halt 出当前的blcok
+          # 但是如果有条件不匹配，就会扔出 pass block
           returned_pass_block = process_route(pattern, keys, conditions) do |*args|
             env['sinatra.route'] = block.instance_variable_get(:@route_name)
+            # 这里执行了block
             route_eval { block[*args] }
           end
 
           # don't wipe out pass_block in superclass
+          # 设置 pass_block，如果可以就传给父类
           pass_block = returned_pass_block if returned_pass_block
         end
       end
 
       # Run routes defined in superclass.
+      # 如果父类有定义这个route，让父类尝试去处理
       if base.superclass.respond_to?(:routes)
         return route!(base.superclass, pass_block)
       end
 
+      # 执行 pass_block
       route_eval(&pass_block) if pass_block
+      # 向下派发或者404错误
       route_missing
     end
 
     # Run a route block and throw :halt with the result.
+    # 在执行完一个route的block之后，调用halt返回结果
     def route_eval
       throw :halt, yield
     end
@@ -1204,8 +1215,7 @@ module Sinatra
     # Revert params afterwards.
     #
     # Returns pass block.
-    # todo 重看
-    # 这个方法会匹配路径，如果路径想符合，就给他设置参数
+    # 这个方法会匹配路径，如果路径符合，就给他设置参数
     def process_route(pattern, keys, conditions, block = nil, values = [])
       # 读出请求的路径
       route = @request.path_info
@@ -1223,9 +1233,13 @@ module Sinatra
       end
 
       # 如果condition也符合，就执行block的内容
-      # todo block的内容是什么？
+      # block的内容有两个
+      # 1. 设置当前env的路径 env['sinatra.route']
+      # 2. 执行路由处理方法
       catch(:pass) do
+        # 如果不符合路由的条件，就throw 一个pass
         conditions.each { |c| throw :pass if c.bind(self).call == false }
+        # 执行block 这里只是执行block的两种方法
         block ? block[self, values] : yield(self, values)
       end
     ensure
@@ -1415,6 +1429,7 @@ module Sinatra
 
       # Removes all routes, filters, middleware and extension hooks from the
       # current class (not routes/filters/... defined by its superclass).
+      # 清除所有的状态
       def reset!
         @conditions     = []
         @routes         = {}
@@ -1432,6 +1447,8 @@ module Sinatra
       end
 
       # Extension modules registered on this class and all superclasses.
+      # 获得所有注册的扩展
+      # todo 什么是 extension
       def extensions
         if superclass.respond_to?(:extensions)
           (@extensions + superclass.extensions).uniq
@@ -1441,6 +1458,7 @@ module Sinatra
       end
 
       # Middleware used in this class and all superclasses.
+      # 获得所有的中间件
       def middleware
         if superclass.respond_to?(:middleware)
           superclass.middleware + @middleware
@@ -1517,25 +1535,31 @@ module Sinatra
       # handled.
       # 错误处理函数
       def error(*codes, &block)
+        # 为这个错误编译成一个特定的路由，供出错之后调用
         args  = compile! "ERROR", //, block
         codes = codes.map { |c| Array(c) }.flatten
         codes << Exception if codes.empty?
+        # 将每个错误编号都和刚刚生成出来的路由绑定
         codes.each { |c| (@errors[c] ||= []) << args }
       end
 
       # Sugar for `error(404) { ... }`
+      # 404 错误
       def not_found(&block)
         error(404, &block)
         error(Sinatra::NotFound, &block)
       end
 
       # Define a named template. The block must return the template source.
+      # 定义一个template 参数是名字和block
+      # block的执行结果就是template的内容
       def template(name, &block)
         filename, line = caller_locations.first
         templates[name] = [block, filename, line.to_i]
       end
 
       # Define the layout template. The block must return the template source.
+      # 定义layout
       def layout(name = :layout, &block)
         template name, &block
       end
@@ -1543,30 +1567,42 @@ module Sinatra
       # Load embedded templates from the file; uses the caller's __FILE__
       # when no file is specified.
       def inline_templates=(file = nil)
+        # 如果 file 存在就用file 否则template就在调用者的文件中
         file = (file.nil? || file == true) ? (caller_files.first || File.expand_path($0)) : file
 
         begin
+          # 读出文件的内容
           io = ::IO.respond_to?(:binread) ? ::IO.binread(file) : ::IO.read(file)
+          # 通过split，将内容分成两份
+          # split 这里的2表示最多分成2份
           app, data = io.gsub("\r\n", "\n").split(/^__END__$/, 2)
         rescue Errno::ENOENT
           app, data = nil
         end
 
         if data
+          # 如果原文件中带编码，就设置编码
           if app and app =~ /([^\n]*\n)?#[^\n]*coding: *(\S+)/m
             encoding = $2
           else
+            # 否则使用默认编码
             encoding = settings.default_encoding
           end
           lines = app.count("\n") + 1
           template = nil
           force_encoding data, encoding
+          # 解析 inline_block
           data.each_line do |line|
             lines += 1
+            # 如果这行是一个template的名字 如 @@ layout
             if line =~ /^@@\s*(.*\S)\s*$/
+              # 生成一个空的template
               template = force_encoding('', encoding)
+              # 将template对象存放到 模版hash中
+              # 注意，之后的循环还会持续往template对象中写东西
               templates[$1.to_sym] = [template, file, lines]
             elsif template
+              # 将内容写到template中，这个会更新 templates 中的内容
               template << line
             end
           end
@@ -1574,6 +1610,8 @@ module Sinatra
       end
 
       # Lookup or register a mime type in Rack's mime registry.
+      # 将类型转换成 mime type
+      # 如果设置了value，且type有效，就注册一个mime type
       def mime_type(type, value = nil)
         return type      if type.nil?
         return type.to_s if type.to_s.include?('/')
@@ -1585,6 +1623,7 @@ module Sinatra
       # provides all mime types matching type, including deprecated types:
       #   mime_types :html # => ['text/html']
       #   mime_types :js   # => ['application/javascript', 'text/javascript']
+      # 将一个类型转换成所有可能的mime type
       def mime_types(type)
         type = mime_type type
         type =~ /^application\/(xml|javascript)$/ ? [type, "text/#$1"] : [type]
@@ -1606,7 +1645,9 @@ module Sinatra
 
       # add a filter
       def add_filter(type, path = nil, options = {}, &block)
+        # 如果没有设置path，那么path的值其实就是options
         path, options = //, path if path.respond_to?(:each_pair)
+        # 将filter当成路由编译一下，加入到filter列表中
         filters[type] << compile!(type, path || //, block, options)
       end
 
@@ -1617,15 +1658,18 @@ module Sinatra
         @conditions << generate_method(name, &block)
       end
 
+      # deprecated 方法了，用来设置 public_folder
       def public=(value)
         warn ":public is no longer used to avoid overloading Module#public, use :public_folder or :public_dir instead"
         set(:public_folder, value)
       end
 
+      # 设置 public folder
       def public_dir=(value)
         self.public_folder = value
       end
 
+      # 获得 public folder
       def public_dir
         public_folder
       end
@@ -1652,6 +1696,9 @@ module Sinatra
 
       # Makes the methods defined in the block and in the Modules given
       # in `extensions` available to the handlers and templates
+      # 这个方法允许用户提供自己的helper方法，其实就是添加自己的api
+      # extensions是module，是module就 include
+      # 如果提供了block，就用class_eval 加进去
       def helpers(*extensions, &block)
         class_eval(&block)   if block_given?
         include(*extensions) if extensions.any?
@@ -1659,6 +1706,8 @@ module Sinatra
 
       # Register an extension. Alternatively take a block from which an
       # extension will be created and registered on the fly.
+      # 注册一个扩展
+      # todo 不知道哪里用了
       def register(*extensions, &block)
         extensions << Module.new(&block) if block_given?
         @extensions += extensions
@@ -1668,17 +1717,20 @@ module Sinatra
         end
       end
 
+      # 查询当前运行的环境
       def development?; environment == :development end
       def production?;  environment == :production  end
       def test?;        environment == :test        end
 
       # Set configuration options for Sinatra and/or the app.
       # Allows scoping of settings for certain environments.
+      # 其实就是调用 set 方法，只是方便将不同环境的设置包在一起
       def configure(*envs)
         yield self if envs.empty? || envs.include?(environment.to_sym)
       end
 
       # Use the specified Rack middleware
+
       def use(middleware, *args, &block)
         @prototype = nil
         @middleware << [middleware, args, block]
@@ -1688,6 +1740,7 @@ module Sinatra
       def quit!
         return unless running?
         # Use Thin's hard #stop! if available, otherwise just #stop.
+        # 调用 stop 来关闭服务器
         running_server.respond_to?(:stop!) ? running_server.stop! : running_server.stop
         $stderr.puts "== Sinatra has ended his set (crowd applauds)" unless handler_name =~/cgi/i
         set :running_server, nil
@@ -2107,6 +2160,9 @@ module Sinatra
     # Keep an eye on Rack's LH #100.
     def force_encoding(*args) settings.force_encoding(*args) end
     if defined? Encoding
+      # 定义 force_encoding 方法
+      # 将传进来的参数强制编码为制定编码
+      # 这个方法用递归的方式，将参数降解为可以被强制编码的对象， 然后将其编码
       def self.force_encoding(data, encoding = default_encoding)
         return if data == settings || data.is_a?(Tempfile)
         if data.respond_to? :force_encoding
