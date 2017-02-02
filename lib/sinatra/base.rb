@@ -1707,7 +1707,6 @@ module Sinatra
       # Register an extension. Alternatively take a block from which an
       # extension will be created and registered on the fly.
       # 注册一个扩展
-      # todo 不知道哪里用了
       def register(*extensions, &block)
         extensions << Module.new(&block) if block_given?
         @extensions += extensions
@@ -1730,7 +1729,7 @@ module Sinatra
       end
 
       # Use the specified Rack middleware
-
+      # 将中间件保存到 @middleware 中
       def use(middleware, *args, &block)
         @prototype = nil
         @middleware << [middleware, args, block]
@@ -1743,6 +1742,7 @@ module Sinatra
         # 调用 stop 来关闭服务器
         running_server.respond_to?(:stop!) ? running_server.stop! : running_server.stop
         $stderr.puts "== Sinatra has ended his set (crowd applauds)" unless handler_name =~/cgi/i
+        # 将一些参数设置为关闭
         set :running_server, nil
         set :handler_name, nil
       end
@@ -1752,15 +1752,21 @@ module Sinatra
       # Run the Sinatra app as a self-hosted server using
       # Thin, Puma, Mongrel, or WEBrick (in that order). If given a block, will call
       # with the constructed handler once we have taken the stage.
+      # 将服务器跑起来
       def run!(options = {}, &block)
         return if running?
+        # 挨个设置
         set options
+        # 检测 rack 的处理器
         handler         = detect_rack_handler
+        # 获得handler的名字
         handler_name    = handler.name.gsub(/.*::/, '')
         server_settings = settings.respond_to?(:server_settings) ? settings.server_settings : {}
+        # 将一些设置加入到settings中
         server_settings.merge!(:Port => port, :Host => bind)
 
         begin
+          # 将handler的服务器跑起来
           start_server(handler, server_settings, handler_name, &block)
         rescue Errno::EADDRINUSE
           $stderr.puts "== Someone is already performing on port #{port}!"
@@ -1774,10 +1780,12 @@ module Sinatra
 
       # Check whether the self-hosted server is running or not.
       def running?
+        # 是否有running_server 这个option
         running_server?
       end
 
       # The prototype instance used to process requests.
+      # 是Sinatra应用的一个实例
       def prototype
         @prototype ||= new
       end
@@ -1795,6 +1803,8 @@ module Sinatra
 
       # Creates a Rack::Builder instance with all the middleware set up and
       # the given +app+ as end point.
+      # 创建了一个 Rack:Builder
+      # 其实每个 .ru 文件，执行的时候，self就是Rack::Builder的实例
       def build(app)
         builder = Rack::Builder.new
         setup_default_middleware builder
@@ -1823,31 +1833,44 @@ module Sinatra
 
       # Starts the server by running the Rack Handler.
       def start_server(handler, server_settings, handler_name)
+        # 调用rack定义的run接口
         handler.run(self, server_settings) do |server|
           unless handler_name =~ /cgi/i
             $stderr.puts "== Sinatra (v#{Sinatra::VERSION}) has taken the stage on #{port} for #{environment} with backup from #{handler_name}"
           end
 
+          # 设置信号量处理方式
           setup_traps
+
+          # 设置变量
+          # 设置running_server变量，这个变量在停止服务器的时候会用
           set :running_server, server
+          # 设置 handler_name 这个handler在调用 start_server 使用
           set :handler_name,   handler_name
           server.threaded = settings.threaded if server.respond_to? :threaded=
 
+          # 这里会执行 start_server 的 block
           yield server if block_given?
         end
       end
 
+      # traps 属性设置Sinatra是否响应系统信号
+      # 这个方法让Sinatra接收到退出信号的时候
+      # 执行quit!方法，然后继续调用原有的处理方式
       def setup_traps
         if traps?
+          # 退出的时候执行 quit!
           at_exit { quit! }
 
+          # 当接收到 INT 和 TERM 的信号
+          # 先调用quit 然后调用原来的方法
           [:INT, :TERM].each do |signal|
             old_handler = trap(signal) do
               quit!
               old_handler.call if old_handler.respond_to?(:call)
             end
           end
-
+          # 这里设置 traps 为false， 防止重复设置
           set :traps, false
         end
       end
@@ -1965,6 +1988,7 @@ module Sinatra
         [ pattern, keys, conditions, wrapper ]
       end
 
+      # 将用户定义的path转换为正则并且将定义的pattern取出放到keys中
       def compile(path)
         if path.respond_to? :to_str
           keys = []
@@ -1978,7 +2002,8 @@ module Sinatra
             ignore = []
 
             # Special character handling.
-            #
+            # gsub 后面跟block 表示匹配正则的部分用后面block计算出来的值代替
+            # 这个正则是匹配 所有不是 ? % \ / : 的特殊字符 或者 是冒号但之后不跟字符的
             pattern = segment.to_str.gsub(/[^\?\%\\\/\:\*\w]|:(?!\w)/) do |c|
               ignore << escaped(c).join if c.match(/[\.@]/)
               patt = encoded(c)
@@ -2030,6 +2055,7 @@ module Sinatra
         enc
       end
 
+      # 将字符转义
       def escaped(char, enc = URI_INSTANCE.escape(char))
         [Regexp.escape(enc), URI_INSTANCE.escape(char, /./)]
       end
@@ -2054,7 +2080,7 @@ module Sinatra
         end
       end
 
-      def setup_default_middleware(builder)
+      def 【setup_default_middleware(builder)
         builder.use ExtendedRack
         builder.use ShowExceptions       if show_exceptions?
         builder.use Rack::MethodOverride if method_override?
@@ -2111,6 +2137,7 @@ module Sinatra
         builder.use Rack::Session::Cookie, options
       end
 
+      # 自动检查并获得一个rack的handler
       def detect_rack_handler
         servers = Array(server)
         servers.each do |server_name|
