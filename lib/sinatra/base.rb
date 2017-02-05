@@ -1178,7 +1178,7 @@ module Sinatra
         # 每一个可能的路径都经过 process_route 去匹配，
         # 如果匹配，则设置 params 然后执行路由对应的block的内容
         routes.each do |pattern, keys, conditions, block|
-          # 一般来说，执行process_route 之后就会被 halt 出当前的blcok
+          # 一般来说，执行process_route 之后就会被 halt 出当前的 block
           # 但是如果有条件不匹配，就会扔出 pass block
           returned_pass_block = process_route(pattern, keys, conditions) do |*args|
             env['sinatra.route'] = block.instance_variable_get(:@route_name)
