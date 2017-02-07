@@ -1653,7 +1653,7 @@ module Sinatra
 
       # Add a route condition. The route is considered non-matching when the
       # block returns false.
-      # 这个方法生成一个condition 方法，加入到 @conditions 列表中
+      # 这个方法生成一个 condition 方法，加入到 @conditions 列表中
       def condition(name = "#{caller.first[/`.*'/]} condition", &block)
         @conditions << generate_method(name, &block)
       end
@@ -1805,6 +1805,9 @@ module Sinatra
       # the given +app+ as end point.
       # 创建了一个 Rack:Builder
       # 其实每个 .ru 文件，执行的时候，self就是Rack::Builder的实例
+      # 通过 Rack::Builder 的实例 可以添加 middleware
+      # 将整个 app 设置成 builder 的 run 变量
+      # 返回 builder
       def build(app)
         builder = Rack::Builder.new
         setup_default_middleware builder
@@ -1896,7 +1899,9 @@ module Sinatra
 
       # Condition for matching user agent. Parameter should be Regexp.
       # Will set params[:agent].
+      # 将 user_agent 作为一个条件传入 condition 数组
       def user_agent(pattern)
+        # condition 方法将后面的block 加入到 condition 数组
         condition do
           if request.user_agent.to_s =~ pattern
             @params[:agent] = $~[1..-1]
@@ -2016,12 +2021,17 @@ module Sinatra
 
             # Key handling.
             #
+            # 这里将路由中的 keys(:xxx 或者 *) 取出来
             pattern.gsub(/((:\w+)|\*)/) do |match|
+              # 如果是星号，keys就叫 splat
               if match == "*"
                 keys << 'splat'
                 "(.*?)"
               else
+                # 去掉冒号 将keys 加入
                 keys << $2[1..-1]
+
+                # todo 不知道 ignore 什么
                 ignore_pattern = safe_ignore(ignore)
 
                 ignore_pattern
@@ -2030,7 +2040,7 @@ module Sinatra
           end
 
           # Special case handling.
-          #
+          # todo 不理解
           if last_segment = segments[-1] and last_segment.match(/\[\^\\\./)
             parts = last_segment.rpartition(/\[\^\\\./)
             parts[1] = '[^'
@@ -2080,11 +2090,13 @@ module Sinatra
         end
       end
 
-      def 【setup_default_middleware(builder)
+      # 这个方法添加了一些必须的中间件
+      def setup_default_middleware(builder)
         builder.use ExtendedRack
         builder.use ShowExceptions       if show_exceptions?
         builder.use Rack::MethodOverride if method_override?
         builder.use Rack::Head
+        # 这三个方法都是设置中间件
         setup_logging    builder
         setup_sessions   builder
         setup_protection builder
@@ -2094,6 +2106,7 @@ module Sinatra
         middleware.each { |c,a,b| builder.use(c, *a, &b) }
       end
 
+      # 设置 logging 相关的中间件
       def setup_logging(builder)
         if logging?
           setup_common_logger(builder)
@@ -2119,6 +2132,8 @@ module Sinatra
         end
       end
 
+      # 设置protection 参数
+      # 具体的 Rack::Protection 就在 rack-protection 目录下
       def setup_protection(builder)
         return unless protection?
         options = Hash === protection ? protection.dup : {}
@@ -2129,10 +2144,13 @@ module Sinatra
         builder.use Rack::Protection, options
       end
 
+      # 使用 session 中间件
       def setup_sessions(builder)
         return unless sessions?
         options = {}
+        # 如果session 要加密，设置secret
         options[:secret] = session_secret if session_secret?
+        # 合并所有的options
         options.merge! sessions.to_hash if sessions.respond_to? :to_hash
         builder.use Rack::Session::Cookie, options
       end
@@ -2172,6 +2190,8 @@ module Sinatra
       end
 
       # Like Kernel#caller but excluding certain magic entries
+      # 将caller方法输出整理了一下
+      # 变成 [file, line, function]
       def cleaned_caller(keep = 3)
         caller(1).
           map!    { |line| line.split(/:(?=\d|in )/, 3)[0,keep] }.
