@@ -43,7 +43,7 @@ module Sinatra
     end
 
     # 通过调用 accept 获得 AcceptEntry 实例数组
-    # 然后和 types 比对，找到
+    # 然后和 types 比对，找到匹配的type
     def preferred_type(*types)
       accepts = accept # just evaluate once
       return accepts.first if types.empty?
@@ -1914,12 +1914,18 @@ module Sinatra
       alias_method :agent, :user_agent
 
       # Condition for matching mimetypes. Accepts file extensions.
+      # provides 会添加 condition 来匹配进来的请求的Accept
       def provides(*types)
+        # 将参数处理成标准的 mime_type
         types.map! { |t| mime_types(t) }
         types.flatten!
+        # 将 block 加入到 condition 数组中
         condition do
+          # 如果设置了 Content-Type
+          # response的 content-type 是types中的一种
           if type = response['Content-Type']
             types.include? type or types.include? type[/^[^;]+/]
+          #
           elsif type = request.preferred_type(types)
             params = (type.respond_to?(:params) ? type.params : {})
             content_type(type, params)
