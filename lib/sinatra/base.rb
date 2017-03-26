@@ -2071,8 +2071,9 @@ module Sinatra
         enc
       end
 
-      # 将字符转义
+      # 将字符转义，返回普通转义和全部转义的结果 后面一般会跟join
       def escaped(char, enc = URI_INSTANCE.escape(char))
+        # escape 的第二个参数，指定了不安全的字符的正则表达式
         [Regexp.escape(enc), URI_INSTANCE.escape(char, /./)]
       end
 
@@ -2233,6 +2234,8 @@ module Sinatra
 
     reset!
 
+
+    # 设置一系列默认参数
     set :environment, (ENV['RACK_ENV'] || :development).to_sym
     set :raise_errors, Proc.new { test? }
     set :dump_errors, Proc.new { !test? }
@@ -2248,6 +2251,7 @@ module Sinatra
     settings.add_charset << /^text\//
 
     # explicitly generating a session secret eagerly to play nice with preforking
+    # 设置 一个session secret
     begin
       require 'securerandom'
       set :session_secret, SecureRandom.hex(64)
@@ -2297,22 +2301,27 @@ module Sinatra
     set :static, Proc.new { public_folder && File.exist?(public_folder) }
     set :static_cache_control, false
 
+    # 设置 Exception 错误处理方法
     error ::Exception do
       response.status = 500
       content_type 'text/html'
       '<h1>Internal Server Error</h1>'
     end
 
+    # 设置一些 development下的东西
     configure :development do
+      # 图片路由
       get '/__sinatra__/:image.png' do
         filename = File.dirname(__FILE__) + "/images/#{params[:image].to_i}.png"
         content_type :png
         send_file filename
       end
 
+      # not found 的时候 设置错误信息
       error NotFound do
         content_type 'text/html'
 
+        # 设置例子
         if self.class == Sinatra::Application
           code = <<-RUBY.gsub(/^ {12}/, '')
             #{request.request_method.downcase} '#{request.path_info}' do
@@ -2332,6 +2341,7 @@ module Sinatra
           code = "# in #{file}\n#{code}" unless file.empty?
         end
 
+        # 出错的 html 页面
         (<<-HTML).gsub(/^ {10}/, '')
           <!DOCTYPE html>
           <html>
@@ -2363,6 +2373,8 @@ module Sinatra
   # inherit all settings, routes, handlers, and error pages from the
   # top-level. Subclassing Sinatra::Base is highly recommended for
   # modular applications.
+
+  # 这个class被Delegator使用，用作所有方法代理的入口
   class Application < Base
     set :logging, Proc.new { ! test? }
     set :method_override, true
@@ -2380,6 +2392,8 @@ module Sinatra
   # Sinatra delegation mixin. Mixing this module into an object causes all
   # methods to be delegated to the Sinatra::Application class. Used primarily
   # at the top-level.
+  # 这是一个代理类
+  # 它会被main给extend，所有调用的方法都会被代理给 Application
   module Delegator #:nodoc:
     def self.delegate(*methods)
       methods.each do |method_name|
